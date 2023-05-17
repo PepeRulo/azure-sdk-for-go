@@ -1,3 +1,21 @@
+Unfortunately, running the "Uploading a blob" example in the README.md returns the following error:
+
+```
+2023/05/05 21:16:11 PUT https://<account name>.blob.core.windows.net/<container>/<blob name>
+--------------------------------------------------------------------------------
+RESPONSE 400: 400 The value for one of the HTTP headers is not in the correct format.
+ERROR CODE: InvalidHeaderValue
+--------------------------------------------------------------------------------
+<?xml version="1.0" encoding="utf-8"?><Error><Code>InvalidHeaderValue</Code><Message>The value for one of the HTTP headers is not in the correct format.
+RequestId:fbfb8c33-101e-0017-4696-7ffd81000000
+Time:2023-05-05T21:16:11.8072176Z</Message><HeaderName>Content-Length</HeaderName><HeaderValue>0</HeaderValue></Error>
+--------------------------------------------------------------------------------
+```
+
+I could not figure out what the problem is, especially because the code is so similar to the one in [storage-quickstart.go](https://github.com/Azure-Samples/storage-blobs-go-quickstart/blob/744bc0c0b2d87ed4177802483fb745161c959964/storage-quickstart.go), except that one uploads a buffer of data instead of a file. 
+
+These changes come straight from the [docs](https://pkg.go.dev/github.com/Azure/azure-sdk-for-go/sdk/storage/azblob#example-package-Client_UploadFile), which are also in [examples_test.go](./examples_test.go), and I believe it is much more illustrative and fool-proof. 
+
 # Azure Blob Storage SDK for Go
 
 > Service Version: 2020-10-02
@@ -94,32 +112,77 @@ Blob metadata name/value pairs are valid HTTP headers and should adhere to all r
 
 ## Examples
 
+For a full list of examples see [examples_test.go](./examples_test.go)
+
 ### Uploading a blob
 
 ```go
-const (
-	account       = "https://MYSTORAGEACCOUNT.blob.core.windows.net/"
-	containerName = "sample-container"
-	blobName      = "sample-blob"
-	sampleFile    = "path/to/sample/file"
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 )
 
-// authenticate with Azure Active Directory
-cred, err := azidentity.NewDefaultAzureCredential(nil)
-// TODO: handle error
+func handleError(err error) {
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+}
 
-// create a client for the specified storage account
-client, err := azblob.NewClient(account, cred, nil)
-// TODO: handle error
+func main() {
+	// Set up file to upload
+	fileSize := 8 * 1024 * 1024
+	fileName := "test_upload_file.txt"
+	fileData := make([]byte, fileSize)
+	err := os.WriteFile(fileName, fileData, 0666)
+	handleError(err)
 
-// open the file for reading
-file, err := os.OpenFile(sampleFile, os.O_RDONLY, 0)
-// TODO: handle error
-defer file.Close()
+	// Open the file to upload
+	fileHandler, err := os.Open(fileName)
+	handleError(err)
 
-// upload the file to the specified container with the specified blob name
-_, err = client.UploadFile(context.TODO(), containerName, blobName, file, nil)
-// TODO: handle error
+	// close the file after it is no longer required.
+	defer func(file *os.File) {
+		err = file.Close()
+		handleError(err)
+	}(fileHandler)
+
+	// delete the local file if required.
+	defer func(name string) {
+		err = os.Remove(name)
+		handleError(err)
+	}(fileName)
+
+	accountName, ok := os.LookupEnv("AZURE_STORAGE_ACCOUNT_NAME")
+	if !ok {
+		panic("AZURE_STORAGE_ACCOUNT_NAME could not be found")
+	}
+	serviceURL := fmt.Sprintf("https://%s.blob.core.windows.net/", accountName)
+
+	cred, err := azidentity.NewDefaultAzureCredential(nil)
+	handleError(err)
+
+	client, err := azblob.NewClient(serviceURL, cred, nil)
+	handleError(err)
+
+	// Upload the file to a block blob
+	_, err = client.UploadFile(context.TODO(), "testcontainer", "virtual/dir/path/"+fileName, fileHandler,
+		&azblob.UploadFileOptions{
+			BlockSize:   int64(1024),
+			Concurrency: uint16(3),
+			// If Progress is non-nil, this function is called periodically as bytes are uploaded.
+			Progress: func(bytesTransferred int64) {
+				fmt.Println(bytesTransferred)
+			},
+		})
+	handleError(err)
+}
 ```
 
 ### Downloading a blob
